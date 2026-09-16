@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Xml.Linq;
 
 namespace CodexProxySwitcher;
@@ -210,7 +211,16 @@ internal sealed class LauncherForm : Form
 
     private void RefreshStatus()
     {
-        proxyText = configStore.Settings.ProxyUrl;
+        proxyText = configStore.Settings.GetDisplayProxyUrl();
+
+        if (configStore.Settings.ProxyPasswordDecryptionFailed)
+        {
+            codexStateText = "无法解密";
+            codexStateColor = Color.FromArgb(255, 196, 128);
+            codexPathText = "保存的代理密码无法解密，点 Settings 重新输入";
+            Invalidate();
+            return;
+        }
 
         var codexPath = CodexFinder.TryFindCodexExePath(configStore.Settings.CodexExePath);
         if (string.IsNullOrWhiteSpace(codexPath))
@@ -230,13 +240,23 @@ internal sealed class LauncherForm : Form
 
     private void ChangeSettings()
     {
-        using var setupForm = new ProxySetupForm(configStore.Settings.ProxyPort, configStore.Settings.CodexExePath);
+        using var setupForm = new ProxySetupForm(
+            configStore.Settings.ProxyEndpoint,
+            configStore.Settings.ProxyPort,
+            configStore.Settings.ProxyUserName,
+            configStore.Settings.ProxyPasswordPlain,
+            configStore.Settings.CodexExePath);
+
         if (setupForm.ShowDialog(this) != DialogResult.OK)
         {
             return;
         }
 
+        configStore.Settings.ProxyScheme = setupForm.ProxyScheme;
+        configStore.Settings.ProxyHost = setupForm.ProxyHost;
         configStore.Settings.ProxyPort = setupForm.ProxyPort;
+        configStore.Settings.ProxyUserName = setupForm.ProxyUserName;
+        configStore.Settings.ProxyPasswordPlain = setupForm.ProxyPassword;
         configStore.Settings.CodexExePath = setupForm.CodexExePath;
         configStore.Save();
         RefreshStatus();
@@ -251,6 +271,7 @@ internal sealed class LauncherForm : Form
 
         var configuredCodexExePath = configStore.Settings.CodexExePath;
         var proxyUrl = configStore.Settings.ProxyUrl;
+        var displayProxyUrl = configStore.Settings.GetDisplayProxyUrl();
 
         try
         {
@@ -267,7 +288,7 @@ internal sealed class LauncherForm : Form
             SetLaunchStatus(
                 "步骤 3/3",
                 string.Equals(mode, "Vpn", StringComparison.OrdinalIgnoreCase)
-                    ? $"正在临时应用代理 {proxyUrl} 并启动 Codex..."
+                    ? $"正在临时应用代理 {displayProxyUrl} 并启动 Codex..."
                     : "正在清理代理环境并原生启动 Codex...");
             await Task.Run(() => StartCodex(codexInstall, mode, proxyUrl));
 
@@ -782,13 +803,28 @@ internal static class DrawingHelpers
 
 internal sealed class ProxySetupForm : Form
 {
+    private static readonly Color EditableFieldColor = Color.FromArgb(244, 249, 255);
+    private static readonly Color LockedFieldColor = Color.FromArgb(224, 231, 243);
+
+    private readonly TextBox proxyAddressBox;
     private readonly TextBox portBox;
+    private readonly TextBox userNameBox;
+    private readonly TextBox passwordBox;
     private readonly TextBox codexPathBox;
 
+    public string ProxyScheme { get; private set; } = "http";
+    public string ProxyHost { get; private set; } = "127.0.0.1";
     public int ProxyPort { get; private set; }
+    public string ProxyUserName { get; private set; } = "";
+    public string ProxyPassword { get; private set; } = "";
     public string CodexExePath { get; private set; } = "";
 
-    public ProxySetupForm(int suggestedPort, string? suggestedCodexExePath)
+    public ProxySetupForm(
+        string? suggestedProxyEndpoint,
+        int suggestedPort,
+        string? suggestedUserName,
+        string? suggestedPassword,
+        string? suggestedCodexExePath)
     {
         Text = "配置代理端口";
         AutoScaleMode = AutoScaleMode.None;
@@ -796,7 +832,7 @@ internal sealed class ProxySetupForm : Form
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
-        ClientSize = new Size(520, 245);
+        ClientSize = new Size(520, 326);
         Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
         BackColor = Color.FromArgb(20, 24, 40);
         DoubleBuffered = true;
@@ -810,8 +846,8 @@ internal sealed class ProxySetupForm : Form
             ForeColor = Color.White,
             BackColor = Color.Transparent,
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(24, 18),
-            Size = new Size(472, 28)
+            Location = new Point(24, 14),
+            Size = new Size(472, 26)
         };
 
         var hint = new Label
@@ -821,21 +857,43 @@ internal sealed class ProxySetupForm : Form
             ForeColor = Color.FromArgb(205, 218, 238),
             BackColor = Color.Transparent,
             TextAlign = ContentAlignment.MiddleCenter,
-            Location = new Point(24, 52),
-            Size = new Size(472, 38)
+            Location = new Point(24, 42),
+            Size = new Size(472, 34)
         };
 
         Text = "Proxy and Codex settings";
-        title.Text = "Configure proxy port and Codex.exe path";
-        hint.Text = "Leave Codex.exe empty to auto-detect the Windows Store app.";
+        title.Text = "Configure the proxy address, credentials and Codex.exe path";
+        hint.Text = "Enter scheme://host, e.g. http://127.0.0.1. Port, username and password come from the fields below; a pasted full URL also works.";
+
+        var proxyAddressLabel = new Label
+        {
+            Text = "代理地址",
+            AutoSize = false,
+            Location = new Point(36, 86),
+            Size = new Size(104, 24),
+            TextAlign = ContentAlignment.MiddleRight,
+            ForeColor = Color.FromArgb(205, 218, 238),
+            BackColor = Color.Transparent
+        };
+
+        proxyAddressBox = new TextBox
+        {
+            Text = suggestedProxyEndpoint ?? "",
+            Location = new Point(146, 84),
+            Size = new Size(318, 24),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = EditableFieldColor,
+            ForeColor = Color.FromArgb(20, 24, 40)
+        };
+        proxyAddressBox.TextChanged += (_, _) => SyncPortBoxFromAddress();
 
         var portLabel = new Label
         {
             Text = "端口号",
             AutoSize = false,
-            Location = new Point(70, 105),
-            Size = new Size(70, 24),
-            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(36, 120),
+            Size = new Size(104, 24),
+            TextAlign = ContentAlignment.MiddleRight,
             ForeColor = Color.FromArgb(205, 218, 238),
             BackColor = Color.Transparent
         };
@@ -843,21 +901,77 @@ internal sealed class ProxySetupForm : Form
         portBox = new TextBox
         {
             Text = suggestedPort.ToString(),
-            Location = new Point(146, 103),
+            Location = new Point(146, 118),
             Size = new Size(160, 24),
             BorderStyle = BorderStyle.FixedSingle,
-            BackColor = Color.FromArgb(244, 249, 255),
+            BackColor = EditableFieldColor,
             ForeColor = Color.FromArgb(20, 24, 40)
         };
         portBox.SelectAll();
+
+        var userNameLabel = new Label
+        {
+            Text = "用户名",
+            AutoSize = false,
+            Location = new Point(36, 154),
+            Size = new Size(104, 24),
+            TextAlign = ContentAlignment.MiddleRight,
+            ForeColor = Color.FromArgb(205, 218, 238),
+            BackColor = Color.Transparent
+        };
+
+        userNameBox = new TextBox
+        {
+            Text = suggestedUserName ?? "",
+            Location = new Point(146, 152),
+            Size = new Size(200, 24),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = EditableFieldColor,
+            ForeColor = Color.FromArgb(20, 24, 40)
+        };
+
+        var passwordLabel = new Label
+        {
+            Text = "密码",
+            AutoSize = false,
+            Location = new Point(36, 188),
+            Size = new Size(104, 24),
+            TextAlign = ContentAlignment.MiddleRight,
+            ForeColor = Color.FromArgb(205, 218, 238),
+            BackColor = Color.Transparent
+        };
+
+        passwordBox = new TextBox
+        {
+            Text = suggestedPassword ?? "",
+            Location = new Point(146, 186),
+            Size = new Size(200, 24),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = EditableFieldColor,
+            ForeColor = Color.FromArgb(20, 24, 40),
+            UseSystemPasswordChar = true
+        };
+
+        var showPasswordBox = new CheckBox
+        {
+            Text = "显示",
+            AutoSize = false,
+            Location = new Point(356, 187),
+            Size = new Size(72, 22),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.FromArgb(205, 218, 238),
+            BackColor = Color.Transparent,
+            Checked = false
+        };
+        showPasswordBox.CheckedChanged += (_, _) => passwordBox.UseSystemPasswordChar = !showPasswordBox.Checked;
 
         var codexPathLabel = new Label
         {
             Text = "Codex.exe",
             AutoSize = false,
-            Location = new Point(70, 139),
-            Size = new Size(70, 24),
-            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(36, 222),
+            Size = new Size(104, 24),
+            TextAlign = ContentAlignment.MiddleRight,
             ForeColor = Color.FromArgb(205, 218, 238),
             BackColor = Color.Transparent
         };
@@ -865,10 +979,10 @@ internal sealed class ProxySetupForm : Form
         codexPathBox = new TextBox
         {
             Text = suggestedCodexExePath ?? "",
-            Location = new Point(146, 137),
+            Location = new Point(146, 220),
             Size = new Size(260, 24),
             BorderStyle = BorderStyle.FixedSingle,
-            BackColor = Color.FromArgb(244, 249, 255),
+            BackColor = EditableFieldColor,
             ForeColor = Color.FromArgb(20, 24, 40)
         };
 
@@ -876,7 +990,7 @@ internal sealed class ProxySetupForm : Form
         {
             Text = "...",
             DialogResult = DialogResult.None,
-            Location = new Point(416, 136),
+            Location = new Point(416, 219),
             Size = new Size(42, 28),
             AccentColor = Color.FromArgb(160, 188, 255)
         };
@@ -886,17 +1000,17 @@ internal sealed class ProxySetupForm : Form
         {
             Text = "保存",
             DialogResult = DialogResult.None,
-            Location = new Point(156, 195),
+            Location = new Point(156, 278),
             Size = new Size(90, 30),
             AccentColor = Color.FromArgb(115, 238, 189)
         };
-        okButton.Click += (_, _) => SavePort();
+        okButton.Click += (_, _) => SaveSettings();
 
         var cancelButton = new GlassButton
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Location = new Point(260, 195),
+            Location = new Point(260, 278),
             Size = new Size(90, 30),
             AccentColor = Color.FromArgb(160, 188, 255)
         };
@@ -906,13 +1020,23 @@ internal sealed class ProxySetupForm : Form
 
         Controls.Add(title);
         Controls.Add(hint);
+        Controls.Add(proxyAddressLabel);
+        Controls.Add(proxyAddressBox);
         Controls.Add(portLabel);
         Controls.Add(portBox);
+        Controls.Add(userNameLabel);
+        Controls.Add(userNameBox);
+        Controls.Add(passwordLabel);
+        Controls.Add(passwordBox);
+        Controls.Add(showPasswordBox);
         Controls.Add(codexPathLabel);
         Controls.Add(codexPathBox);
         Controls.Add(browseButton);
         Controls.Add(okButton);
         Controls.Add(cancelButton);
+
+        SyncPortBoxFromAddress();
+        ActiveControl = proxyAddressBox.Text.Trim().Length > 0 ? proxyAddressBox : portBox;
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -944,13 +1068,80 @@ internal sealed class ProxySetupForm : Form
         }
     }
 
-    private void SavePort()
+    // When the address explicitly carries a port, the port box mirrors it and stops
+    // accepting input so the two can never disagree.
+    private void SyncPortBoxFromAddress()
     {
-        if (!int.TryParse(portBox.Text.Trim(), out var port) || port < 1 || port > 65535)
+        var address = proxyAddressBox.Text.Trim();
+        if (address.Length > 0
+            && ProxyUrlParser.TryParse(address, out var parsed, out _)
+            && parsed.Port is { } parsedPort)
+        {
+            portBox.Text = parsedPort.ToString();
+            portBox.ReadOnly = true;
+            portBox.BackColor = LockedFieldColor;
+            return;
+        }
+
+        portBox.ReadOnly = false;
+        portBox.BackColor = EditableFieldColor;
+    }
+
+    private void SaveSettings()
+    {
+        var address = proxyAddressBox.Text.Trim();
+        var userName = userNameBox.Text.Trim();
+        var password = passwordBox.Text;
+
+        string scheme;
+        string host;
+        int? addressPort = null;
+
+        if (address.Length == 0)
+        {
+            scheme = "http";
+            host = "127.0.0.1";
+        }
+        else
+        {
+            if (!ProxyUrlParser.TryParse(address, out var parsed, out var addressError))
+            {
+                MessageBox.Show(this, addressError, "代理地址无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                proxyAddressBox.Focus();
+                proxyAddressBox.SelectAll();
+                return;
+            }
+
+            scheme = parsed.Scheme;
+            host = parsed.Host;
+            addressPort = parsed.Port;
+
+            // A pasted URL can carry credentials, but they only apply when the dedicated
+            // fields are left empty.
+            if (userName.Length == 0 && password.Length == 0 && parsed.UserName.Length > 0)
+            {
+                userName = parsed.UserName;
+                password = parsed.Password;
+            }
+        }
+
+        var port = 0;
+        if (addressPort is { } explicitPort)
+        {
+            port = explicitPort;
+        }
+        else if (!int.TryParse(portBox.Text.Trim(), out port) || port < 1 || port > 65535)
         {
             MessageBox.Show(this, "请输入 1 到 65535 之间的端口号。", "端口无效", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             portBox.Focus();
             portBox.SelectAll();
+            return;
+        }
+
+        if (password.Length > 0 && userName.Length == 0)
+        {
+            MessageBox.Show(this, "填写密码前请先填写用户名。", "缺少用户名", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            userNameBox.Focus();
             return;
         }
 
@@ -974,10 +1165,142 @@ internal sealed class ProxySetupForm : Form
             }
         }
 
+        ProxyScheme = scheme;
+        ProxyHost = host;
         ProxyPort = port;
+        ProxyUserName = userName;
+        ProxyPassword = password;
         CodexExePath = codexExePath;
         DialogResult = DialogResult.OK;
         Close();
+    }
+}
+
+internal readonly record struct ProxyAddress(string Scheme, string Host, int? Port, string UserName, string Password);
+
+internal static class ProxyUrlParser
+{
+    private static readonly string[] SupportedSchemes =
+    {
+        "http", "https", "socks5", "socks5h", "socks4", "socks4a"
+    };
+
+    public static bool TryParse(string? text, out ProxyAddress address, out string error)
+    {
+        address = default;
+        error = "";
+
+        var raw = (text ?? "").Trim();
+        if (raw.Length == 0)
+        {
+            error = "请输入代理地址或端口号。";
+            return false;
+        }
+
+        // A bare number is still accepted so the simple "only a port" flow keeps working.
+        if (int.TryParse(raw, out var barePort))
+        {
+            if (barePort is < 1 or > 65535)
+            {
+                error = "端口号需要在 1 到 65535 之间。";
+                return false;
+            }
+
+            address = new ProxyAddress("http", "127.0.0.1", barePort, "", "");
+            return true;
+        }
+
+        var separator = raw.IndexOf("://", StringComparison.Ordinal);
+        string scheme;
+        string remainder;
+
+        if (separator < 0)
+        {
+            scheme = "http";
+            remainder = raw;
+        }
+        else
+        {
+            scheme = raw[..separator].Trim().ToLowerInvariant();
+            remainder = raw[(separator + 3)..];
+        }
+
+        if (Array.IndexOf(SupportedSchemes, scheme) < 0)
+        {
+            error = $"不支持的代理协议 \"{scheme}\"，可用：{string.Join("、", SupportedSchemes)}。";
+            return false;
+        }
+
+        var terminator = remainder.IndexOfAny(new[] { '/', '?', '#' });
+        if (terminator >= 0)
+        {
+            remainder = remainder[..terminator];
+        }
+
+        // Browsers treat the last '@' as the credential separator, so match that behaviour
+        // instead of relying on System.Uri, which is stricter about unescaped '@' in passwords.
+        var at = remainder.LastIndexOf('@');
+        var userInfo = at >= 0 ? remainder[..at] : "";
+        var hostPort = at >= 0 ? remainder[(at + 1)..] : remainder;
+
+        string host;
+        string portText;
+
+        if (hostPort.StartsWith("[", StringComparison.Ordinal))
+        {
+            var closing = hostPort.IndexOf(']');
+            if (closing < 0)
+            {
+                error = "IPv6 地址缺少右方括号，例如 http://[::1]:7897。";
+                return false;
+            }
+
+            host = hostPort[..(closing + 1)];
+            portText = hostPort[(closing + 1)..].TrimStart(':');
+        }
+        else
+        {
+            var colon = hostPort.LastIndexOf(':');
+            host = colon >= 0 ? hostPort[..colon] : hostPort;
+            portText = colon >= 0 ? hostPort[(colon + 1)..] : "";
+        }
+
+        if (host.Length == 0)
+        {
+            error = "代理地址缺少主机名，例如 http://127.0.0.1:7897。";
+            return false;
+        }
+
+        if (host.Any(char.IsWhiteSpace) || userInfo.Any(char.IsWhiteSpace))
+        {
+            error = "代理地址中不能包含空格，请改用 %20。";
+            return false;
+        }
+
+        // The port is optional here because it normally comes from its own field.
+        int? port = null;
+        if (portText.Length > 0)
+        {
+            if (!int.TryParse(portText, out var parsedPort) || parsedPort is < 1 or > 65535)
+            {
+                error = "端口号需要在 1 到 65535 之间，例如 http://127.0.0.1:7897。";
+                return false;
+            }
+
+            port = parsedPort;
+        }
+
+        var userName = "";
+        var password = "";
+        if (userInfo.Length > 0)
+        {
+            var split = userInfo.IndexOf(':');
+            userName = Uri.UnescapeDataString(split < 0 ? userInfo : userInfo[..split]);
+            password = split < 0 ? "" : Uri.UnescapeDataString(userInfo[(split + 1)..]);
+        }
+
+        address = new ProxyAddress(scheme, host, port, userName, password);
+        return true;
     }
 }
 
@@ -1016,7 +1339,7 @@ internal sealed class LauncherConfigStore
         var settings = Load(settingsPath);
         if (settings is null)
         {
-            using var setupForm = new ProxySetupForm(ReadSuggestedPort(), "");
+            using var setupForm = new ProxySetupForm(null, ReadSuggestedPort(), null, null, "");
             if (setupForm.ShowDialog() != DialogResult.OK)
             {
                 return null;
@@ -1024,7 +1347,11 @@ internal sealed class LauncherConfigStore
 
             settings = new LauncherSettings
             {
+                ProxyScheme = setupForm.ProxyScheme,
+                ProxyHost = setupForm.ProxyHost,
                 ProxyPort = setupForm.ProxyPort,
+                ProxyUserName = setupForm.ProxyUserName,
+                ProxyPasswordPlain = setupForm.ProxyPassword,
                 CodexExePath = setupForm.CodexExePath
             };
             Save(settingsPath, settings);
@@ -1049,10 +1376,34 @@ internal sealed class LauncherConfigStore
             }
 
             var settings = JsonSerializer.Deserialize<LauncherSettings>(File.ReadAllText(settingsPath), JsonOptions);
-            if (settings is null || settings.ProxyPort < 1 || settings.ProxyPort > 65535)
+            if (settings is null || settings.ProxyPort is < 1 or > 65535)
             {
                 return null;
             }
+
+            // Older versions and hand-edited files keep the credentials inside ProxyHost,
+            // for example "user:pass@host". Move them into their own fields.
+            var scheme = settings.ProxyScheme ?? "";
+            var host = settings.ProxyHost ?? "";
+            var userName = settings.ProxyUserName ?? "";
+            var password = settings.ProxyPassword ?? "";
+
+            var at = host.LastIndexOf('@');
+            if (at >= 0)
+            {
+                var userInfo = host[..at];
+                var separator = userInfo.IndexOf(':');
+
+                userName = Uri.UnescapeDataString(separator < 0 ? userInfo : userInfo[..separator]);
+                password = separator < 0 ? "" : Uri.UnescapeDataString(userInfo[(separator + 1)..]);
+                host = host[(at + 1)..];
+            }
+
+            // Older or hand-edited files can also leave the scheme or host empty.
+            settings.ProxyScheme = string.IsNullOrWhiteSpace(scheme) ? "http" : scheme;
+            settings.ProxyHost = string.IsNullOrWhiteSpace(host) ? "127.0.0.1" : host;
+            settings.ProxyUserName = userName;
+            settings.ProxyPassword = password;
 
             return settings;
         }
@@ -1167,6 +1518,169 @@ internal sealed class LauncherConfigStore
     }
 }
 
+// Wraps Windows DPAPI (CryptProtectData) so the saved proxy password is not stored in
+// plain text. The protected value is tagged with a prefix, which keeps older or hand
+// edited settings.json files readable: an untagged value is simply used as is.
+internal static class PasswordProtection
+{
+    public const string Prefix = "dpapi:";
+
+    public static string Protect(string plain)
+    {
+        if (plain.Length == 0)
+        {
+            return "";
+        }
+
+        if (!TryProtectCore(plain, out var protectedBytes))
+        {
+            // Fall back to the plain value rather than losing the password.
+            return plain;
+        }
+
+        return Prefix + Convert.ToBase64String(protectedBytes);
+    }
+
+    public static bool TryUnprotect(string stored, out string plain)
+    {
+        plain = "";
+        if (stored.Length == 0)
+        {
+            return true;
+        }
+
+        if (!stored.StartsWith(Prefix, StringComparison.Ordinal))
+        {
+            plain = stored;
+            return true;
+        }
+
+        byte[] protectedBytes;
+        try
+        {
+            protectedBytes = Convert.FromBase64String(stored[Prefix.Length..]);
+        }
+        catch
+        {
+            return false;
+        }
+
+        return TryUnprotectCore(protectedBytes, out plain);
+    }
+
+    private static bool TryProtectCore(string plain, out byte[] protectedBytes)
+    {
+        protectedBytes = [];
+        var input = Encoding.UTF8.GetBytes(plain);
+        var inputHandle = GCHandle.Alloc(input, GCHandleType.Pinned);
+        var inputBlob = new CryptBlob { Size = input.Length, Data = inputHandle.AddrOfPinnedObject() };
+
+        try
+        {
+            if (!CryptProtectData(ref inputBlob, null, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectFlags.UIForbidden, out var outputBlob))
+            {
+                return false;
+            }
+
+            try
+            {
+                var result = new byte[outputBlob.Size];
+                Marshal.Copy(outputBlob.Data, result, 0, outputBlob.Size);
+                protectedBytes = result;
+                return true;
+            }
+            finally
+            {
+                if (outputBlob.Data != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(outputBlob.Data);
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            inputHandle.Free();
+        }
+    }
+
+    private static bool TryUnprotectCore(byte[] protectedBytes, out string plain)
+    {
+        plain = "";
+        var inputHandle = GCHandle.Alloc(protectedBytes, GCHandleType.Pinned);
+        var inputBlob = new CryptBlob { Size = protectedBytes.Length, Data = inputHandle.AddrOfPinnedObject() };
+
+        try
+        {
+            if (!CryptUnprotectData(ref inputBlob, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, CryptProtectFlags.UIForbidden, out var outputBlob))
+            {
+                return false;
+            }
+
+            try
+            {
+                var result = new byte[outputBlob.Size];
+                Marshal.Copy(outputBlob.Data, result, 0, outputBlob.Size);
+                plain = Encoding.UTF8.GetString(result);
+                return true;
+            }
+            finally
+            {
+                if (outputBlob.Data != IntPtr.Zero)
+                {
+                    Marshal.FreeHGlobal(outputBlob.Data);
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        finally
+        {
+            inputHandle.Free();
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CryptBlob
+    {
+        public int Size;
+        public IntPtr Data;
+    }
+
+    [Flags]
+    private enum CryptProtectFlags
+    {
+        UIForbidden = 0x1
+    }
+
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptProtectData(
+        ref CryptBlob dataIn,
+        string? description,
+        IntPtr entropy,
+        IntPtr reserved,
+        IntPtr promptStruct,
+        CryptProtectFlags flags,
+        out CryptBlob dataOut);
+
+    [DllImport("crypt32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CryptUnprotectData(
+        ref CryptBlob dataIn,
+        IntPtr description,
+        IntPtr entropy,
+        IntPtr reserved,
+        IntPtr promptStruct,
+        CryptProtectFlags flags,
+        out CryptBlob dataOut);
+}
+
 internal sealed class LauncherSettings
 {
     public string ProxyScheme { get; set; } = "http";
@@ -1175,11 +1689,74 @@ internal sealed class LauncherSettings
 
     public int ProxyPort { get; set; } = 7897;
 
+    public string ProxyUserName { get; set; } = "";
+
+    // Stored on disk as "dpapi:<base64>", or as plain text for older / hand edited files.
+    public string ProxyPassword { get; set; } = "";
+
+    // Always go through this property: it decrypts on read and encrypts on write.
+    [JsonIgnore]
+    public string ProxyPasswordPlain
+    {
+        get => PasswordProtection.TryUnprotect(ProxyPassword, out var plain) ? plain : "";
+        set => ProxyPassword = PasswordProtection.Protect(value);
+    }
+
+    // True when the stored password is protected but no longer decryptable, which happens
+    // when settings.json is copied to another Windows user or another machine.
+    [JsonIgnore]
+    public bool ProxyPasswordDecryptionFailed => !PasswordProtection.TryUnprotect(ProxyPassword, out _);
+
     public string CodexExePath { get; set; } = "";
 
     public bool DesktopShortcutPrompted { get; set; }
 
-    public string ProxyUrl => $"{ProxyScheme}://{ProxyHost}:{ProxyPort}";
+    // The address field in the settings dialog holds the scheme and host only, so the port
+    // stays editable in its own box.
+    [JsonIgnore]
+    public string ProxyEndpoint => $"{ProxyScheme}://{ProxyHost}";
+
+    // Credentials are escaped only when the URL is assembled, so a password containing
+    // '@', ':' or '/' still produces a valid proxy URL.
+    [JsonIgnore]
+    public string ProxyUrl
+    {
+        get
+        {
+            var password = ProxyPasswordPlain;
+            var credentials = ProxyUserName.Length == 0
+                ? ""
+                : password.Length == 0
+                    ? $"{Uri.EscapeDataString(ProxyUserName)}@"
+                    : $"{Uri.EscapeDataString(ProxyUserName)}:{Uri.EscapeDataString(password)}@";
+
+            return $"{ProxyScheme}://{credentials}{ProxyHost}:{ProxyPort}";
+        }
+    }
+
+    // Used for anything that renders the proxy in the UI so the password never shows up
+    // in plain text. The real URL is only handed to the Codex process environment.
+    public string GetDisplayProxyUrl()
+    {
+        var proxyUrl = ProxyUrl;
+        var authorityStart = proxyUrl.IndexOf("://", StringComparison.Ordinal);
+        authorityStart = authorityStart < 0 ? 0 : authorityStart + 3;
+
+        var at = proxyUrl.LastIndexOf('@');
+        if (at < authorityStart)
+        {
+            return proxyUrl;
+        }
+
+        var userInfo = proxyUrl[authorityStart..at];
+        var separator = userInfo.IndexOf(':');
+        if (separator < 0)
+        {
+            return proxyUrl;
+        }
+
+        return proxyUrl[..authorityStart] + userInfo[..separator] + ":******" + proxyUrl[at..];
+    }
 }
 
 internal sealed class CodexInstallInfo

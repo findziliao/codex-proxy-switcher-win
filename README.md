@@ -15,9 +15,13 @@ Codex Proxy Switcher for Windows 是一个轻量级 Windows 启动器，用来�
 
 - 首次运行输入本地代理端口，例如 `7897`、`7890`、`9000`。
 - 端口保存到 `%APPDATA%\CodexProxySwitcher\settings.json`，以后自动读取。
+- 支持填写完整代理地址：`代理地址`、`端口号`、`用户名`、`密码` 各自独立，可填需要账号密码的代理。
+- 可用协议：`http`、`https`、`socks5`、`socks5h`、`socks4`、`socks4a`。
+- 主界面显示代理时自动把密码打码，例如 `http://user:******@host:8080`。
+- 密码用 Windows DPAPI 加密后再存盘，只有当前 Windows 用户能解密，配置文件里看不到明文。
 - 自动查询 Windows 商店版 Codex 的安装路径。
 - 支持“原生启动”和“VPN 启动”两种模式。
-- 可随时在界面中修改代理端口。
+- 可随时点主界面左下角的 `Settings` 打开配置对话框。
 - 首次配置完成后可选择创建桌面快捷方式，只提示一次。
 - 保留一键启动用的 `.bat` / `.ps1` 脚本。
 
@@ -27,11 +31,11 @@ Codex Proxy Switcher for Windows 是一个轻量级 Windows 启动器，用来�
 
 - 仓库内置版：[release/Codex-Proxy-Switcher.exe](release/Codex-Proxy-Switcher.exe)
 - 直接下载链接：[Codex-Proxy-Switcher.exe](https://github.com/hloolx/codex-proxy-switcher-win/raw/main/release/Codex-Proxy-Switcher.exe)
-- GitHub Release 版：[CodexProxySwitcher-win-x64-v0.1.6.zip](https://github.com/hloolx/codex-proxy-switcher-win/releases/latest)
+- GitHub Release 版：[CodexProxySwitcher-win-x64-v0.1.7.zip](https://github.com/hloolx/codex-proxy-switcher-win/releases/latest)
 
 下载后双击 `Codex-Proxy-Switcher.exe` 即可。这个 exe 是自包含 win-x64 版本，普通用户不需要自己安装 .NET Runtime，也不需要自己编译。
 
-普通用户只需要这个单独的 exe 文件就可以完成主要功能：第一次运行时填写本地代理端口，之后它会自动保存配置、自动查找 Codex 安装位置，并让你选择“原生启动”或“VPN 启动”。
+普通用户只需要这个单独的 exe 文件就可以完成主要功能：第一次运行时填写本地代理端口（代理需要账号密码时再填用户名和密码），之后它会自动保存配置、自动查找 Codex 安装位置，并让你选择“原生启动”或“VPN 启动”。
 
 如果 Windows 弹出 SmartScreen 提示，这是因为个人开源 exe 没有代码签名。确认来源是本仓库后，可以选择“更多信息”然后继续运行。
 
@@ -100,15 +104,44 @@ Windows 桌面版 Codex 当前没有一个稳定、显式的“只给 Codex 配�
 - 更安全：不写系统环境变量，不要求长期管理员权限。
 - 更直观：启动前明确选择“原生启动”或“VPN 启动”。
 
+## 代理配置说明
+
+在主界面左下角点 `Settings` 可以打开配置对话框（首次运行时会自动弹出），一共五个字段：
+
+| 字段 | 示例 | 说明 |
+| --- | --- | --- |
+| 代理地址 | `http://127.0.0.1` | 只填 `scheme://host`，不用写端口和账号密码 |
+| 端口号 | `10809` | 地址里写了端口时，这一格会自动锁定并显示解析结果 |
+| 用户名 | `myuser` | 不需要认证时留空 |
+| 密码 | `••••••••` | 默认打码，勾选「显示」可看明文；留空表示无密码 |
+| Codex.exe | | 留空则自动查找 Windows 商店版 Codex |
+
+常见填法：
+
+- **本地代理软件**：代理地址填 `http://127.0.0.1`，端口号填你的端口，用户名密码留空。
+- **需要认证的远程代理**：代理地址填 `http://proxy.example.com`，端口号、用户名、密码按服务商给的填。
+- **直接粘贴整条 URL**：把 `http://user:pass@host:8080` 粘进「代理地址」也可以，保存时会自动拆出端口和账号密码；两格都留空时才会采用粘进来的账号密码。
+
+程序会自动做百分号转义，密码里的 `@`、`:`、`/` 这类字符不会把 URL 拼坏。
+
+如果 `settings.json` 是更老的版本、把账号密码写在 `ProxyHost` 里（例如 `user:pass@host`），新版打开时会自动迁移到独立字段，不需要手动改文件。
+
+密码会用 Windows DPAPI 加密后再写入 `%APPDATA%\CodexProxySwitcher\settings.json`，只有当前 Windows 用户能解密，直接看文件是 `dpapi:` 开头的一段 Base64。
+
+> 注意两点：
+>
+> 1. 加密绑定的是**当前 Windows 用户**。把 `settings.json` 复制到另一台电脑或另一个 Windows 账户后，密码会解不出来，主界面会提示「无法解密」，这时点 `Settings` 重新输入一次即可。
+> 2. 启动 Codex 的那一瞬间密码会解密后写入进程的环境变量，同一账户下的其他程序理论上仍有机会读到。DPAPI 防的是配置文件被拷走，不防同用户的恶意程序。
+
 ## 最佳使用方式
 
 推荐流程：
 
 1. 先启动你的代理软件，确认本地 HTTP 代理端口，例如 `7897`、`7890` 或 `9000`。
-2. 第一次运行 `Codex-Proxy-Switcher.exe`，只输入端口号，不需要输入完整 URL。
-3. 平时优先点击“VPN 启动”打开 Codex。
+2. 第一次运行 `Codex-Proxy-Switcher.exe`，只填端口号即可（代理地址默认 `http://127.0.0.1`）；代理需要账号密码时，再填下面两格。
+3. 平时优先点击“VPN 启动”打开 Codex。启动成功后本工具窗口会自动关闭，要改配置请在启动前点 `Settings`。
 4. 如果你在国内外网络之间切换，或代理软件关闭了，点击“原生启动”。
-5. 如果端口变化，点“修改端口”更新一次即可。
+5. 如果端口或账号密码变化，点 `Settings` 更新一次即可。
 6. 不要同时从原始 Codex 图标和本工具启动 Codex；建议只固定本工具到任务栏。
 
 ## 使用
@@ -116,8 +149,9 @@ Windows 桌面版 Codex 当前没有一个稳定、显式的“只给 Codex 配�
 如果你拿到的是编译好的 exe：
 
 1. 双击 `Codex-Proxy-Switcher.exe`。
-2. 第一次输入你的本地代理端口。
+2. 第一次会弹出配置对话框，填本机代理端口；代理需要认证时，再填用户名和密码。
 3. 选择“原生启动”或“VPN 启动”。
+4. 之后想改配置，打开主界面点左下角的 `Settings`。
 
 如果你使用脚本版本：
 
@@ -125,6 +159,12 @@ Windows 桌面版 Codex 当前没有一个稳定、显式的“只给 Codex 配�
 
    ```txt
    http://127.0.0.1:7897
+   ```
+
+   需要账号密码时也可以写完整 URL：
+
+   ```txt
+   http://user:pass@host:8080
    ```
 
 2. 双击 `Start-Codex-VPN.bat`。

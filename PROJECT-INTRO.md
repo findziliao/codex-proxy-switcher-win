@@ -13,10 +13,10 @@ project: [hloolx/codex-proxy-switcher-win](https://github.com/hloolx/codex-proxy
 
 这个启动器的便携逻辑是：
 
-1. 第一次打开时要求输入本地代理端口，例如 `7897`、`7890` 或 `9000`。
+1. 第一次打开时要求输入本地代理端口，例如 `7897`、`7890` 或 `9000`；代理需要账号密码时，还可以填完整代理地址和用户名密码。
 2. 程序会把端口保存到当前用户目录：
    `%APPDATA%\CodexProxySwitcher\settings.json`
-3. 之后每次打开都会自动读取这个端口。
+3. 之后每次打开都会自动读取这个端口。代理密码会用 Windows DPAPI 加密后保存，只绑当前 Windows 用户。
 4. 启动时自动查询这台电脑上的 Windows 商店版 Codex 安装位置和 AppUserModelID。
 5. 优先通过系统应用激活方式启动 Codex，避免直接运行 WindowsApps 里的 Electron exe。
 6. 首次配置完成后可选择创建桌面快捷方式，只提示一次。
@@ -69,8 +69,8 @@ project: [hloolx/codex-proxy-switcher-win](https://github.com/hloolx/codex-proxy
 
 1. 先启动代理软件。
 2. 确认本地 HTTP 代理端口。
-3. 第一次打开启动器时输入端口号。
-4. 日常使用优先点击“VPN 启动”。
+3. 第一次打开启动器时输入端口号；代理需要账号密码时一起填好。
+4. 日常使用优先点击“VPN 启动”；要改配置先点主界面左下角的 `Settings`（启动成功后本工具窗口会自动关闭）。
 5. 网络不需要代理时点击“原生启动”。
 6. 首次配置后可以选择添加桌面快捷方式，任务栏也建议固定本启动器，而不是原始 Codex 图标。
 

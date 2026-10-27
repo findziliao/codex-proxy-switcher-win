@@ -9,7 +9,7 @@
     <RootNamespace>CodexProxySwitcher</RootNamespace>
     <Product>Codex Proxy Switcher for Windows</Product>
     <Authors>hloolx</Authors>
-    <Version>0.1.7</Version>
+    <Version>0.1.8</Version>
     <RepositoryUrl>https://github.com/hloolx/codex-proxy-switcher-win</RepositoryUrl>
     <PackageProjectUrl>https://github.com/hloolx/codex-proxy-switcher-win</PackageProjectUrl>
     <Description>A lightweight Windows launcher for starting Codex Desktop with optional proxy environment variables.</Description>

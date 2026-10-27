@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.ComponentModel;
 using System.Drawing.Drawing2D;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -119,6 +120,16 @@ internal sealed class LauncherForm : Form
             UseShellExecute = true
         });
 
+        var vsCodeButton = new GlassButton
+        {
+            Text = "VS Code 代理",
+            Location = new Point(324, 326),
+            Size = new Size(156, 34),
+            SurfaceColor = Color.FromArgb(30, 42, 61),
+            AccentColor = Color.FromArgb(255, 196, 128)
+        };
+        vsCodeButton.Click += (_, _) => OpenVsCodeIntegration();
+
         var authorLink = new LinkLabel
         {
             Text = "project repo",
@@ -147,9 +158,10 @@ internal sealed class LauncherForm : Form
         Controls.Add(vpnButton);
         Controls.Add(changePortButton);
         Controls.Add(openConfigButton);
+        Controls.Add(vsCodeButton);
         Controls.Add(authorLink);
 
-        launchControls = new Control[] { nativeButton, vpnButton, changePortButton };
+        launchControls = new Control[] { nativeButton, vpnButton, changePortButton, vsCodeButton };
 
         RefreshStatus();
     }
@@ -260,6 +272,12 @@ internal sealed class LauncherForm : Form
         configStore.Settings.CodexExePath = setupForm.CodexExePath;
         configStore.Save();
         RefreshStatus();
+    }
+
+    private void OpenVsCodeIntegration()
+    {
+        using var form = new VsCodeProxyForm(configStore);
+        form.ShowDialog(this);
     }
 
     private async Task LaunchAsync(string mode)
@@ -1176,6 +1194,1084 @@ internal sealed class ProxySetupForm : Form
     }
 }
 
+// Lets the user push the configured proxy into the two places the VS Code Codex extension
+// actually looks at, without hand editing any file.
+internal sealed class VsCodeProxyForm : Form
+{
+    private static readonly Color MutedColor = Color.FromArgb(160, 180, 205);
+    private static readonly Color EnabledColor = Color.FromArgb(126, 231, 190);
+    private static readonly Color DisabledColor = Color.FromArgb(140, 155, 178);
+
+    private readonly LauncherConfigStore configStore;
+    private readonly string? settingsPath;
+    private readonly CheckBox dotEnvBox;
+    private readonly CheckBox vsCodeBox;
+    private readonly Label dotEnvState;
+    private readonly Label vsCodeState;
+    private readonly Label dotEnvPath;
+    private readonly Label vsCodePath;
+    private readonly Label messageLabel;
+
+    public VsCodeProxyForm(LauncherConfigStore configStore)
+    {
+        this.configStore = configStore;
+        settingsPath = VsCodeSettingsStore.FindSettingsPath();
+
+        Text = "VS Code / Codex extension proxy";
+        AutoScaleMode = AutoScaleMode.None;
+        StartPosition = FormStartPosition.CenterParent;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ClientSize = new Size(580, 424);
+        Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        BackColor = Color.FromArgb(20, 24, 40);
+        DoubleBuffered = true;
+        Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
+
+        var title = new Label
+        {
+            Text = "把代理写进 VS Code 里的 Codex 扩展",
+            AutoSize = false,
+            Font = new Font(Font.FontFamily, 10.5F, FontStyle.Bold),
+            ForeColor = Color.White,
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Location = new Point(28, 14),
+            Size = new Size(524, 26)
+        };
+
+        var subtitle = new Label
+        {
+            Text = "两处独立开关，可以只开一个，也可以都开。",
+            AutoSize = false,
+            ForeColor = MutedColor,
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Location = new Point(28, 42),
+            Size = new Size(524, 22)
+        };
+
+        dotEnvBox = CreateCheckBox("写入 ~/.codex/.env", new Point(48, 88));
+        dotEnvState = CreateStateLabel(new Point(392, 88));
+
+        var dotEnvDesc = CreateDescriptionLabel(
+            "Codex 扩展、Codex CLI 和桌面版都会走代理，改动后重启 Codex 生效。",
+            new Point(66, 112));
+
+        dotEnvPath = CreateDescriptionLabel("", new Point(66, 132), 8.25F);
+
+        vsCodeBox = CreateCheckBox("写入 VS Code 的 http.proxy", new Point(48, 196));
+        vsCodeState = CreateStateLabel(new Point(392, 196));
+
+        var vsCodeDesc = CreateDescriptionLabel(
+            "只影响 VS Code 里的 Codex 扩展，VS Code 自身的网络请求也会跟着走。",
+            new Point(66, 220));
+
+        vsCodePath = CreateDescriptionLabel("", new Point(66, 240), 8.25F);
+
+        var warning = new Label
+        {
+            Text = "注意：两个文件里都只能是明文代理地址，DPAPI 加密仅用于启动器自己的 settings.json。\n"
+                + "改完后在 VS Code 里执行一次 Developer: Reload Window，扩展才会用上新代理。",
+            AutoSize = false,
+            ForeColor = Color.FromArgb(255, 196, 128),
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.TopLeft,
+            Location = new Point(28, 292),
+            Size = new Size(524, 40)
+        };
+
+        messageLabel = new Label
+        {
+            Text = "",
+            AutoSize = false,
+            ForeColor = EnabledColor,
+            BackColor = Color.Transparent,
+            TextAlign = ContentAlignment.MiddleLeft,
+            Location = new Point(28, 336),
+            Size = new Size(524, 20)
+        };
+
+        var applyButton = new GlassButton
+        {
+            Text = "应用",
+            Location = new Point(148, 372),
+            Size = new Size(100, 32),
+            AccentColor = Color.FromArgb(115, 238, 189)
+        };
+        applyButton.Click += (_, _) => Apply();
+
+        var revertButton = new GlassButton
+        {
+            Text = "全部撤销",
+            Location = new Point(262, 372),
+            Size = new Size(110, 32),
+            AccentColor = Color.FromArgb(255, 176, 120)
+        };
+        revertButton.Click += (_, _) => RevertAll();
+
+        var closeButton = new GlassButton
+        {
+            Text = "关闭",
+            DialogResult = DialogResult.Cancel,
+            Location = new Point(410, 372),
+            Size = new Size(100, 32),
+            AccentColor = Color.FromArgb(160, 188, 255)
+        };
+
+        CancelButton = closeButton;
+
+        Controls.Add(title);
+        Controls.Add(subtitle);
+        Controls.Add(dotEnvBox);
+        Controls.Add(dotEnvState);
+        Controls.Add(dotEnvDesc);
+        Controls.Add(dotEnvPath);
+        Controls.Add(vsCodeBox);
+        Controls.Add(vsCodeState);
+        Controls.Add(vsCodeDesc);
+        Controls.Add(vsCodePath);
+        Controls.Add(warning);
+        Controls.Add(messageLabel);
+        Controls.Add(applyButton);
+        Controls.Add(revertButton);
+        Controls.Add(closeButton);
+
+        RefreshState();
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+
+        using var background = new LinearGradientBrush(ClientRectangle, Color.FromArgb(22, 28, 48), Color.FromArgb(42, 57, 92), 35F);
+        e.Graphics.FillRectangle(background, ClientRectangle);
+
+        DrawCard(e.Graphics, new Rectangle(28, 76, 524, 96));
+        DrawCard(e.Graphics, new Rectangle(28, 184, 524, 96));
+
+        using var border = new Pen(Color.FromArgb(48, 255, 255, 255), 1F);
+        e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+    }
+
+    private static void DrawCard(Graphics graphics, Rectangle bounds)
+    {
+        var rect = new Rectangle(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+        using var path = DrawingHelpers.RoundRect(rect, 14);
+        using var brush = new LinearGradientBrush(rect, Color.FromArgb(38, 51, 76), Color.FromArgb(28, 38, 58), 90F);
+        using var pen = new Pen(Color.FromArgb(76, 112, 140, 172), 1F);
+        graphics.FillPath(brush, path);
+        graphics.DrawPath(pen, path);
+    }
+
+    private CheckBox CreateCheckBox(string text, Point location)
+    {
+        return new CheckBox
+        {
+            Text = text,
+            AutoSize = false,
+            Location = location,
+            Size = new Size(300, 22),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font(Font.FontFamily, 9.5F, FontStyle.Bold),
+            ForeColor = Color.White,
+            BackColor = Color.Transparent
+        };
+    }
+
+    private Label CreateStateLabel(Point location)
+    {
+        return new Label
+        {
+            Text = "",
+            AutoSize = false,
+            Location = location,
+            Size = new Size(140, 22),
+            TextAlign = ContentAlignment.MiddleRight,
+            ForeColor = DisabledColor,
+            BackColor = Color.Transparent
+        };
+    }
+
+    private Label CreateDescriptionLabel(string text, Point location, float size = 9F)
+    {
+        return new Label
+        {
+            Text = text,
+            AutoSize = false,
+            Location = location,
+            Size = new Size(468, 20),
+            Font = new Font(Font.FontFamily, size, FontStyle.Regular),
+            ForeColor = size < 9F ? Color.FromArgb(126, 145, 172) : MutedColor,
+            BackColor = Color.Transparent
+        };
+    }
+
+    private void RefreshState()
+    {
+        var dotEnvApplied = CodexDotEnvStore.ReadProxy().Length > 0;
+        dotEnvBox.Checked = dotEnvApplied;
+        dotEnvState.Text = dotEnvApplied ? "已启用" : "未启用";
+        dotEnvState.ForeColor = dotEnvApplied ? EnabledColor : DisabledColor;
+        dotEnvPath.Text = "路径：" + CodexDotEnvStore.EnvPath;
+
+        if (settingsPath is null)
+        {
+            vsCodeBox.Checked = false;
+            vsCodeBox.Enabled = false;
+            vsCodeState.Text = "未找到";
+            vsCodeState.ForeColor = Color.FromArgb(255, 196, 128);
+            vsCodePath.Text = "没有找到 %APPDATA%\\Code\\User\\settings.json";
+            return;
+        }
+
+        var vsCodeApplied = VsCodeSettingsStore.ReadProxy(settingsPath).Length > 0;
+        vsCodeBox.Checked = vsCodeApplied;
+        vsCodeState.Text = vsCodeApplied ? "已启用" : "未启用";
+        vsCodeState.ForeColor = vsCodeApplied ? EnabledColor : DisabledColor;
+        vsCodePath.Text = "路径：" + settingsPath;
+    }
+
+    private void Apply()
+    {
+        if (configStore.Settings.ProxyPasswordDecryptionFailed)
+        {
+            MessageBox.Show(
+                this,
+                "保存的代理密码无法解密，请先在 Settings 里重新输入密码。",
+                "无法应用",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return;
+        }
+
+        var proxyUrl = configStore.Settings.ProxyUrl;
+        var report = new List<string>();
+
+        try
+        {
+            var dotEnvApplied = CodexDotEnvStore.ReadProxy().Length > 0;
+            if (dotEnvBox.Checked && !dotEnvApplied)
+            {
+                CodexDotEnvStore.Apply(proxyUrl);
+                report.Add("已写入 ~/.codex/.env");
+            }
+            else if (!dotEnvBox.Checked && dotEnvApplied)
+            {
+                CodexDotEnvStore.Clear();
+                report.Add("已移除 ~/.codex/.env 里的代理");
+            }
+
+            if (settingsPath is not null)
+            {
+                var current = VsCodeSettingsStore.ReadProxy(settingsPath);
+                if (vsCodeBox.Checked)
+                {
+                    if (!string.Equals(current, proxyUrl, StringComparison.Ordinal))
+                    {
+                        if (current.Length > 0 && !configStore.Settings.VsCodeProxyOverwritten)
+                        {
+                            configStore.Settings.VsCodeProxyOverwritten = true;
+                            configStore.Settings.VsCodeProxyPreviousValue = current;
+                        }
+
+                        VsCodeSettingsStore.Apply(settingsPath, proxyUrl);
+                        report.Add("已写入 VS Code 的 http.proxy");
+                    }
+                }
+                else if (current.Length > 0)
+                {
+                    RevertVsCode();
+                    report.Add("已移除 VS Code 的 http.proxy");
+                }
+            }
+
+            configStore.Save();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "写入失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            RefreshState();
+            return;
+        }
+
+        RefreshState();
+        messageLabel.Text = report.Count == 0 ? "配置没有变化。" : string.Join("；", report) + "。";
+    }
+
+    private void RevertAll()
+    {
+        try
+        {
+            CodexDotEnvStore.Clear();
+            RevertVsCode();
+            configStore.Save();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "撤销失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            RefreshState();
+            return;
+        }
+
+        RefreshState();
+        messageLabel.Text = "已撤销全部集成配置。";
+    }
+
+    private void RevertVsCode()
+    {
+        if (settingsPath is null)
+        {
+            return;
+        }
+
+        // Put back whatever the user had before this tool overwrote it. When there was
+        // nothing, drop the key instead of leaving an empty string behind.
+        if (configStore.Settings.VsCodeProxyOverwritten
+            && configStore.Settings.VsCodeProxyPreviousValue.Length > 0)
+        {
+            VsCodeSettingsStore.Apply(settingsPath, configStore.Settings.VsCodeProxyPreviousValue);
+        }
+        else
+        {
+            VsCodeSettingsStore.Clear(settingsPath);
+        }
+
+        configStore.Settings.VsCodeProxyOverwritten = false;
+        configStore.Settings.VsCodeProxyPreviousValue = "";
+    }
+}
+
+// VS Code's settings.json is JSONC: it allows // and /* */ comments plus trailing commas,
+// so round-tripping it through JsonSerializer would throw the user's comments away. This
+// edits the raw text and only rewrites the single property it was asked to change.
+internal static class JsoncPatcher
+{
+    private readonly record struct PropertySpan(
+        int KeyStart,
+        int ValueStart,
+        int ValueEnd,
+        int CommaBefore,
+        int CommaAfter);
+
+    public static bool TryGetTopLevelString(string text, string key, out string value, out string? error)
+    {
+        value = "";
+        var span = FindTopLevelProperty(text, key, out error);
+        if (span is not { } property || property.ValueStart >= text.Length || text[property.ValueStart] != '"')
+        {
+            return false;
+        }
+
+        var cursor = property.ValueStart;
+        if (!TryReadString(text, ref cursor, out var decoded, out error))
+        {
+            return false;
+        }
+
+        value = decoded;
+        return true;
+    }
+
+    public static string SetTopLevelString(string text, string key, string value)
+    {
+        var literal = Quote(value);
+        var span = FindTopLevelProperty(text, key, out var error);
+        if (error is not null)
+        {
+            throw new InvalidDataException(error);
+        }
+
+        if (span is { } property)
+        {
+            return text[..property.ValueStart] + literal + text[property.ValueEnd..];
+        }
+
+        var open = FindTopLevelOpenBrace(text);
+        if (open < 0)
+        {
+            throw new InvalidDataException("The file does not start with a JSON object.");
+        }
+
+        var newline = DetectNewline(text);
+        var entry = DetectIndent(text, open) + Quote(key) + ": " + literal;
+
+        var afterOpen = SkipTrivia(text, open + 1, out _);
+        if (afterOpen < text.Length && text[afterOpen] == '}')
+        {
+            return text[..(open + 1)] + newline + entry + newline + text[afterOpen..];
+        }
+
+        return text[..(open + 1)] + newline + entry + "," + text[(open + 1)..];
+    }
+
+    public static string RemoveTopLevelProperty(string text, string key)
+    {
+        var span = FindTopLevelProperty(text, key, out var error);
+        if (error is not null || span is not { } property)
+        {
+            return text;
+        }
+
+        int start;
+        int end;
+
+        if (property.CommaAfter >= 0)
+        {
+            start = LineStart(text, property.KeyStart);
+            end = property.CommaAfter + 1;
+
+            // The entry sat on its own line, so swallow the line break that follows it.
+            if (start > 0 && IsLineBreak(text[start - 1]))
+            {
+                if (end < text.Length && text[end] == '\r')
+                {
+                    end++;
+                }
+
+                if (end < text.Length && text[end] == '\n')
+                {
+                    end++;
+                }
+            }
+        }
+        else if (property.CommaBefore >= 0)
+        {
+            start = property.CommaBefore;
+            end = property.ValueEnd;
+        }
+        else
+        {
+            start = LineStart(text, property.KeyStart);
+            end = property.ValueEnd;
+
+            // Only property in the object: keep the braces on their own lines.
+            if (start > 0 && IsLineBreak(text[start - 1]))
+            {
+                if (end < text.Length && text[end] == '\r')
+                {
+                    end++;
+                }
+
+                if (end < text.Length && text[end] == '\n')
+                {
+                    end++;
+                }
+            }
+        }
+
+        return text[..start] + text[end..];
+    }
+
+    private static PropertySpan? FindTopLevelProperty(string text, string key, out string? error)
+    {
+        var cursor = SkipTrivia(text, 0, out error);
+        if (error is not null)
+        {
+            return null;
+        }
+
+        if (cursor >= text.Length || text[cursor] != '{')
+        {
+            error = "The file does not start with a JSON object.";
+            return null;
+        }
+
+        cursor++;
+        var commaBefore = -1;
+
+        while (true)
+        {
+            cursor = SkipTrivia(text, cursor, out error);
+            if (error is not null)
+            {
+                return null;
+            }
+
+            if (cursor >= text.Length)
+            {
+                error = "Unexpected end of file.";
+                return null;
+            }
+
+            if (text[cursor] == '}')
+            {
+                return null;
+            }
+
+            var keyStart = cursor;
+            if (!TryReadString(text, ref cursor, out var name, out error))
+            {
+                return null;
+            }
+
+            cursor = SkipTrivia(text, cursor, out error);
+            if (error is not null)
+            {
+                return null;
+            }
+
+            if (cursor >= text.Length || text[cursor] != ':')
+            {
+                error = "Expected ':' after a property name.";
+                return null;
+            }
+
+            cursor = SkipTrivia(text, cursor + 1, out error);
+            if (error is not null)
+            {
+                return null;
+            }
+
+            var valueStart = cursor;
+            if (!TrySkipValue(text, ref cursor, out error))
+            {
+                return null;
+            }
+
+            var valueEnd = cursor;
+            cursor = SkipTrivia(text, cursor, out error);
+            if (error is not null)
+            {
+                return null;
+            }
+
+            var commaAfter = -1;
+            if (cursor < text.Length && text[cursor] == ',')
+            {
+                commaAfter = cursor;
+                cursor++;
+            }
+
+            if (string.Equals(name, key, StringComparison.Ordinal))
+            {
+                return new PropertySpan(keyStart, valueStart, valueEnd, commaBefore, commaAfter);
+            }
+
+            commaBefore = commaAfter;
+        }
+    }
+
+    private static int FindTopLevelOpenBrace(string text)
+    {
+        var cursor = SkipTrivia(text, 0, out _);
+        return cursor < text.Length && text[cursor] == '{' ? cursor : -1;
+    }
+
+    private static int SkipTrivia(string text, int index, out string? error)
+    {
+        error = null;
+        var cursor = index;
+
+        while (cursor < text.Length)
+        {
+            var c = text[cursor];
+            if (c is ' ' or '\t' or '\r' or '\n')
+            {
+                cursor++;
+                continue;
+            }
+
+            if (c == '/' && cursor + 1 < text.Length)
+            {
+                if (text[cursor + 1] == '/')
+                {
+                    var lineEnd = text.IndexOf('\n', cursor + 2);
+                    cursor = lineEnd < 0 ? text.Length : lineEnd + 1;
+                    continue;
+                }
+
+                if (text[cursor + 1] == '*')
+                {
+                    var blockEnd = text.IndexOf("*/", cursor + 2, StringComparison.Ordinal);
+                    if (blockEnd < 0)
+                    {
+                        error = "The file has an unterminated block comment.";
+                        return text.Length;
+                    }
+
+                    cursor = blockEnd + 2;
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        return cursor;
+    }
+
+    private static bool TryReadString(string text, ref int index, out string value, out string? error)
+    {
+        value = "";
+        error = null;
+
+        if (index >= text.Length || text[index] != '"')
+        {
+            error = "Expected a string value.";
+            return false;
+        }
+
+        var builder = new StringBuilder();
+        var cursor = index + 1;
+
+        while (cursor < text.Length)
+        {
+            var c = text[cursor];
+            if (c == '"')
+            {
+                index = cursor + 1;
+                value = builder.ToString();
+                return true;
+            }
+
+            if (c != '\\')
+            {
+                builder.Append(c);
+                cursor++;
+                continue;
+            }
+
+            if (cursor + 1 >= text.Length)
+            {
+                break;
+            }
+
+            switch (text[cursor + 1])
+            {
+                case '"': builder.Append('"'); cursor += 2; break;
+                case '\\': builder.Append('\\'); cursor += 2; break;
+                case '/': builder.Append('/'); cursor += 2; break;
+                case 'b': builder.Append('\b'); cursor += 2; break;
+                case 'f': builder.Append('\f'); cursor += 2; break;
+                case 'n': builder.Append('\n'); cursor += 2; break;
+                case 'r': builder.Append('\r'); cursor += 2; break;
+                case 't': builder.Append('\t'); cursor += 2; break;
+                case 'u':
+                    if (cursor + 6 > text.Length
+                        || !ushort.TryParse(
+                            text.AsSpan(cursor + 2, 4),
+                            NumberStyles.HexNumber,
+                            CultureInfo.InvariantCulture,
+                            out var code))
+                    {
+                        error = "The file has an invalid \\u escape.";
+                        return false;
+                    }
+
+                    builder.Append((char)code);
+                    cursor += 6;
+                    break;
+                default:
+                    error = "The file has an invalid escape sequence.";
+                    return false;
+            }
+        }
+
+        error = "The file has an unterminated string.";
+        return false;
+    }
+
+    private static bool TrySkipValue(string text, ref int index, out string? error)
+    {
+        error = null;
+
+        if (index >= text.Length)
+        {
+            error = "Unexpected end of file.";
+            return false;
+        }
+
+        var cursor = index;
+        var c = text[cursor];
+
+        if (c == '"')
+        {
+            if (!TryReadString(text, ref cursor, out _, out error))
+            {
+                return false;
+            }
+
+            index = cursor;
+            return true;
+        }
+
+        if (c is '{' or '[')
+        {
+            if (!TrySkipContainer(text, ref cursor, out error))
+            {
+                return false;
+            }
+
+            index = cursor;
+            return true;
+        }
+
+        while (cursor < text.Length)
+        {
+            var ch = text[cursor];
+            if (ch is ',' or '}' or ']')
+            {
+                break;
+            }
+
+            if (ch == '/' && cursor + 1 < text.Length && (text[cursor + 1] == '/' || text[cursor + 1] == '*'))
+            {
+                break;
+            }
+
+            cursor++;
+        }
+
+        while (cursor > index && char.IsWhiteSpace(text[cursor - 1]))
+        {
+            cursor--;
+        }
+
+        index = cursor;
+        return true;
+    }
+
+    private static bool TrySkipContainer(string text, ref int index, out string? error)
+    {
+        error = null;
+        var depth = 0;
+        var cursor = index;
+
+        while (cursor < text.Length)
+        {
+            var c = text[cursor];
+
+            if (c == '"')
+            {
+                if (!TryReadString(text, ref cursor, out _, out error))
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (c == '/' && cursor + 1 < text.Length && (text[cursor + 1] == '/' || text[cursor + 1] == '*'))
+            {
+                cursor = SkipTrivia(text, cursor, out error);
+                if (error is not null)
+                {
+                    return false;
+                }
+
+                continue;
+            }
+
+            if (c is '{' or '[')
+            {
+                depth++;
+                cursor++;
+                continue;
+            }
+
+            if (c is '}' or ']')
+            {
+                depth--;
+                cursor++;
+
+                if (depth == 0)
+                {
+                    index = cursor;
+                    return true;
+                }
+
+                continue;
+            }
+
+            cursor++;
+        }
+
+        error = "The file has an unbalanced object or array.";
+        return false;
+    }
+
+    private static int LineStart(string text, int index)
+    {
+        var cursor = index;
+        while (cursor > 0 && (text[cursor - 1] == ' ' || text[cursor - 1] == '\t'))
+        {
+            cursor--;
+        }
+
+        return cursor;
+    }
+
+    private static bool IsLineBreak(char c) => c is '\r' or '\n';
+
+    private static string DetectNewline(string text) => text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+
+    private static string DetectIndent(string text, int open)
+    {
+        var lineBreak = text.IndexOf('\n', open);
+        if (lineBreak < 0)
+        {
+            return "    ";
+        }
+
+        var cursor = lineBreak + 1;
+        var builder = new StringBuilder();
+        while (cursor < text.Length && (text[cursor] == ' ' || text[cursor] == '\t'))
+        {
+            builder.Append(text[cursor]);
+            cursor++;
+        }
+
+        return builder.Length > 0 ? builder.ToString() : "    ";
+    }
+
+    private static string Quote(string value)
+    {
+        var builder = new StringBuilder(value.Length + 2);
+        builder.Append('"');
+
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '"': builder.Append("\\\""); break;
+                case '\\': builder.Append("\\\\"); break;
+                case '\b': builder.Append("\\b"); break;
+                case '\f': builder.Append("\\f"); break;
+                case '\n': builder.Append("\\n"); break;
+                case '\r': builder.Append("\\r"); break;
+                case '\t': builder.Append("\\t"); break;
+                default:
+                    if (c < ' ')
+                    {
+                        builder.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                    }
+                    else
+                    {
+                        builder.Append(c);
+                    }
+
+                    break;
+            }
+        }
+
+        builder.Append('"');
+        return builder.ToString();
+    }
+}
+
+// Writes "http.proxy" into the user's VS Code settings.json. The Codex extension reads
+// that key and forwards it to codex.exe as HTTP_PROXY / HTTPS_PROXY, so this reaches the
+// extension without touching any environment variable of the running editor.
+internal static class VsCodeSettingsStore
+{
+    private const string ProxyKey = "http.proxy";
+
+    public static string? FindSettingsPath()
+    {
+        var roaming = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        foreach (var product in new[] { "Code", "Code - Insiders" })
+        {
+            var path = Path.Combine(roaming, product, "User", "settings.json");
+            if (File.Exists(path))
+            {
+                return path;
+            }
+        }
+
+        return null;
+    }
+
+    public static string ReadProxy(string settingsPath)
+    {
+        try
+        {
+            var text = File.ReadAllText(settingsPath);
+            return JsoncPatcher.TryGetTopLevelString(text, ProxyKey, out var value, out _) ? value : "";
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    public static void Apply(string settingsPath, string proxyUrl)
+    {
+        var text = File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : "{\n}";
+        File.WriteAllText(settingsPath, JsoncPatcher.SetTopLevelString(text, ProxyKey, proxyUrl));
+    }
+
+    public static void Clear(string settingsPath)
+    {
+        if (!File.Exists(settingsPath))
+        {
+            return;
+        }
+
+        var text = File.ReadAllText(settingsPath);
+        var updated = JsoncPatcher.RemoveTopLevelProperty(text, ProxyKey);
+        if (!string.Equals(updated, text, StringComparison.Ordinal))
+        {
+            File.WriteAllText(settingsPath, updated);
+        }
+    }
+}
+
+// codex.exe loads CODEX_HOME/.env with dotenv, and the VS Code extension, the CLI and the
+// desktop app all share the same CODEX_HOME. Writing the proxy there is the only switch that
+// covers all three shapes at once.
+internal static class CodexDotEnvStore
+{
+    private static readonly string[] ManagedKeys =
+    {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY"
+    };
+
+    private const string NoProxy = "localhost,127.0.0.1,::1";
+
+    public static string EnvPath
+    {
+        get
+        {
+            var codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
+            if (string.IsNullOrWhiteSpace(codexHome))
+            {
+                codexHome = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".codex");
+            }
+
+            return Path.Combine(codexHome, ".env");
+        }
+    }
+
+    public static string ReadProxy()
+    {
+        foreach (var line in ReadLines(EnvPath))
+        {
+            var trimmed = line.TrimStart();
+            if (trimmed.StartsWith('#'))
+            {
+                continue;
+            }
+
+            var separator = trimmed.IndexOf('=');
+            if (separator <= 0)
+            {
+                continue;
+            }
+
+            var key = trimmed[..separator].Trim();
+            if (string.Equals(key, "HTTP_PROXY", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(key, "HTTPS_PROXY", StringComparison.OrdinalIgnoreCase))
+            {
+                return Unquote(trimmed[(separator + 1)..].Trim());
+            }
+        }
+
+        return "";
+    }
+
+    public static void Apply(string proxyUrl)
+    {
+        var kept = ReadLines(EnvPath).Where(line => !IsManagedKey(line)).ToList();
+        TrimTrailingBlankLines(kept);
+
+        kept.Add($"HTTP_PROXY=\"{proxyUrl}\"");
+        kept.Add($"HTTPS_PROXY=\"{proxyUrl}\"");
+        kept.Add($"ALL_PROXY=\"{proxyUrl}\"");
+        kept.Add($"NO_PROXY=\"{NoProxy}\"");
+
+        WriteLines(EnvPath, kept);
+    }
+
+    public static void Clear()
+    {
+        if (!File.Exists(EnvPath))
+        {
+            return;
+        }
+
+        var kept = ReadLines(EnvPath).Where(line => !IsManagedKey(line)).ToList();
+        TrimTrailingBlankLines(kept);
+
+        // Nothing but comments and blank lines left: drop the file instead of keeping an
+        // empty stub around.
+        if (kept.All(line => line.Trim().Length == 0 || line.TrimStart().StartsWith('#')))
+        {
+            File.Delete(EnvPath);
+            return;
+        }
+
+        WriteLines(EnvPath, kept);
+    }
+
+    private static string[] ReadLines(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? File.ReadAllLines(path) : Array.Empty<string>();
+        }
+        catch
+        {
+            return Array.Empty<string>();
+        }
+    }
+
+    private static void WriteLines(string path, IReadOnlyList<string> lines)
+    {
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        File.WriteAllText(path, string.Join(Environment.NewLine, lines) + Environment.NewLine);
+    }
+
+    private static void TrimTrailingBlankLines(List<string> lines)
+    {
+        while (lines.Count > 0 && lines[^1].Trim().Length == 0)
+        {
+            lines.RemoveAt(lines.Count - 1);
+        }
+    }
+
+    private static bool IsManagedKey(string line)
+    {
+        var trimmed = line.TrimStart();
+        if (trimmed.StartsWith('#'))
+        {
+            return false;
+        }
+
+        var separator = trimmed.IndexOf('=');
+        if (separator <= 0)
+        {
+            return false;
+        }
+
+        var key = trimmed[..separator].Trim();
+        return ManagedKeys.Any(managed => string.Equals(managed, key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string Unquote(string value)
+    {
+        if (value.Length >= 2
+            && ((value[0] == '"' && value[^1] == '"') || (value[0] == '\'' && value[^1] == '\'')))
+        {
+            return value[1..^1];
+        }
+
+        return value;
+    }
+}
+
 internal readonly record struct ProxyAddress(string Scheme, string Host, int? Port, string UserName, string Password);
 
 internal static class ProxyUrlParser
@@ -1710,6 +2806,12 @@ internal sealed class LauncherSettings
     public string CodexExePath { get; set; } = "";
 
     public bool DesktopShortcutPrompted { get; set; }
+
+    // Remembers the value the user had in VS Code's "http.proxy" before this tool replaced
+    // it, so undo can hand it back instead of just deleting the key.
+    public bool VsCodeProxyOverwritten { get; set; }
+
+    public string VsCodeProxyPreviousValue { get; set; } = "";
 
     // The address field in the settings dialog holds the scheme and host only, so the port
     // stays editable in its own box.

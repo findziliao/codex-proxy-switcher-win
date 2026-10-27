@@ -22,6 +22,7 @@ Codex Proxy Switcher for Windows 是一个轻量级 Windows 启动器，用来�
 - 自动查询 Windows 商店版 Codex 的安装路径。
 - 支持“原生启动”和“VPN 启动”两种模式。
 - 可随时点主界面左下角的 `Settings` 打开配置对话框。
+- 内置「VS Code 代理」面板，一键把当前代理写进 VS Code 的 Codex 扩展（`http.proxy` 或 `~/.codex/.env`），不用手改配置文件。
 - 首次配置完成后可选择创建桌面快捷方式，只提示一次。
 - 保留一键启动用的 `.bat` / `.ps1` 脚本。
 
@@ -31,7 +32,7 @@ Codex Proxy Switcher for Windows 是一个轻量级 Windows 启动器，用来�
 
 - 仓库内置版：[release/Codex-Proxy-Switcher.exe](release/Codex-Proxy-Switcher.exe)
 - 直接下载链接：[Codex-Proxy-Switcher.exe](https://github.com/hloolx/codex-proxy-switcher-win/raw/main/release/Codex-Proxy-Switcher.exe)
-- GitHub Release 版：[CodexProxySwitcher-win-x64-v0.1.7.zip](https://github.com/hloolx/codex-proxy-switcher-win/releases/latest)
+- GitHub Release 版：[CodexProxySwitcher-win-x64-v0.1.8.zip](https://github.com/hloolx/codex-proxy-switcher-win/releases/latest)
 
 下载后双击 `Codex-Proxy-Switcher.exe` 即可。这个 exe 是自包含 win-x64 版本，普通用户不需要自己安装 .NET Runtime，也不需要自己编译。
 
@@ -133,6 +134,48 @@ Windows 桌面版 Codex 当前没有一个稳定、显式的“只给 Codex 配�
 > 1. 加密绑定的是**当前 Windows 用户**。把 `settings.json` 复制到另一台电脑或另一个 Windows 账户后，密码会解不出来，主界面会提示「无法解密」，这时点 `Settings` 重新输入一次即可。
 > 2. 启动 Codex 的那一瞬间密码会解密后写入进程的环境变量，同一账户下的其他程序理论上仍有机会读到。DPAPI 防的是配置文件被拷走，不防同用户的恶意程序。
 
+## VS Code 里的 Codex 扩展怎么走代理
+
+主界面点 **`VS Code 代理`** 打开面板，里面是两个独立开关，可以只开一个，也可以都开。
+
+### 开关一：写入 `~/.codex/.env`（推荐）
+
+```env
+HTTP_PROXY="http://user:pass@host:8080"
+HTTPS_PROXY="http://user:pass@host:8080"
+ALL_PROXY="http://user:pass@host:8080"
+NO_PROXY="localhost,127.0.0.1,::1"
+```
+
+`codex.exe` 内建 dotenv，启动时会加载 `CODEX_HOME/.env`。而 VS Code 扩展、Codex CLI、Codex 桌面版**共用同一个 `CODEX_HOME`**（扩展里写的是 `process.env.CODEX_HOME ?? ~/.codex`），所以这一处配置三种形态通吃。
+
+写入时会保留文件里已有的其他变量，只替换上面四个键；撤销时也只删这四个键，文件只剩它们时会直接把文件删掉。
+
+### 开关二：写入 VS Code 的 `http.proxy`
+
+```json
+"http.proxy": "http://user:pass@host:8080"
+```
+
+Codex 扩展 spawn `codex.exe` 时会读 VS Code 的 `http.proxy`，把它当作 `HTTP_PROXY` / `HTTPS_PROXY` 塞进子进程环境。所以这个键只影响 VS Code 里的 Codex —— 顺带 VS Code 自身的网络请求也会走这个代理。
+
+- 面板会修改 `%APPDATA%\Code\User\settings.json`，用**文本级补丁**写入，注释、尾逗号和其他设置都原样保留
+- 写入前会记下你原本的 `http.proxy`，点「全部撤销」时优先还原你原来的值，没有才删除这个键
+- 扩展**不读** `http.noProxy`，也不会主动设 `NO_PROXY`；需要绕过本地地址只能靠 VS Code 进程自身的环境变量
+
+### 两者的优先级
+
+扩展 spawn 时的环境是 `{...process.env, ...读到的 http.proxy}`，而 dotenv 不覆盖已存在的进程环境变量。所以 **`http.proxy` 优先，`.env` 兜底**。两个都开不会打架。
+
+### 改完要重启
+
+- `~/.codex/.env`：重启 Codex（VS Code 里执行 `Developer: Reload Window`，桌面版退出重开）
+- `http.proxy`：VS Code 里执行 `Developer: Reload Window`
+
+> 注意：这两个文件里只能是**明文**代理地址，codex 和 VS Code 都读不懂 DPAPI 格式。DPAPI 加密只用于启动器自己的 `settings.json`。
+>
+> 另外，`~/.codex/config.toml` 里的 `[network] proxy_url` **不是**给 Codex 自己出站用的 —— 它只管沙箱内进程的出口策略，即使配了 `[features.network_proxy] enabled = true` 也不会改变 Codex 访问 chatgpt.com 的链路。想让 Codex 走代理，请用上面两个开关。
+
 ## 最佳使用方式
 
 推荐流程：
@@ -152,6 +195,7 @@ Windows 桌面版 Codex 当前没有一个稳定、显式的“只给 Codex 配�
 2. 第一次会弹出配置对话框，填本机代理端口；代理需要认证时，再填用户名和密码。
 3. 选择“原生启动”或“VPN 启动”。
 4. 之后想改配置，打开主界面点左下角的 `Settings`。
+5. 想让 VS Code 里的 Codex 扩展也走代理，点主界面的 `VS Code 代理`，勾选需要的开关后点「应用」。
 
 如果你使用脚本版本：
 

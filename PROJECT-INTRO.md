@@ -72,7 +72,8 @@ project: [hloolx/codex-proxy-switcher-win](https://github.com/hloolx/codex-proxy
 3. 第一次打开启动器时输入端口号；代理需要账号密码时一起填好。
 4. 日常使用优先点击“VPN 启动”；要改配置先点主界面左下角的 `Settings`（启动成功后本工具窗口会自动关闭）。
 5. 网络不需要代理时点击“原生启动”。
-6. 首次配置后可以选择添加桌面快捷方式，任务栏也建议固定本启动器，而不是原始 Codex 图标。
+6. 想让 VS Code 里的 Codex 扩展也走代理，点主界面的 `VS Code 代理`：可以写 `~/.codex/.env`（扩展、CLI、桌面版通吃），也可以写 VS Code 的 `http.proxy`（只影响 VS Code 侧），两个开关互相独立。
+7. 首次配置后可以选择添加桌面快捷方式，任务栏也建议固定本启动器，而不是原始 Codex 图标。
 
 ## 项目文件
 
